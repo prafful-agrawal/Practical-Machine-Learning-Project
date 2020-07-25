@@ -1,0 +1,428 @@
+---
+title: "Practical-Machine-Learning-Project"
+author: "Prafful Agrawal"
+date: "July 23, 2020"
+output:
+  html_document:
+    keep_md: yes
+  pdf_document: default
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      message = FALSE,
+                      warning = FALSE)
+```
+
+
+## Introduction
+
+Devices such as *Jawbone Up*, *Nike FuelBand*, and *Fitbit* enable humans to collect a large amount of data about their personal activity at a relatively inexpensive price. Using these devices, one thing that people regularly do is quantify *how much of a particular activity they do*, but they **rarely** quantify *how well they do it*.
+
+In this project, we use data from the accelerometers on the belt, forearm, arm, and dumbell of **6 participants** who were asked to perform barbell lifts first *correctly* and then *incorrectly* in **5 different ways**. Our goal is to predict the manner in which they did the exercise by using the above data.
+
+The data for this project come from this source: [http://groupware.les.inf.puc-rio.br/har](http://groupware.les.inf.puc-rio.br/har) (see the section on the Weight Lifting Exercise Dataset). 
+
+
+## Data Preprocessing and Exploratory Analysis
+
+Import the packages. 
+
+```{r import_packages}
+library(caret)
+library(dplyr)
+```
+
+The *training data* for this project are available here:
+
+[https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv)
+
+The *testing data* are available here:
+
+[https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv)
+
+We download the data in the **`data`** folder.
+
+```{r download_data}
+# Check to see if the directory exists
+if(!file.exists("./data")) {dir.create("data")}
+
+# Download Training data
+if(!file.exists("./data/pml-training.csv")) {
+  url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+  download.file(url, destfile = "./data/pml-training.csv")
+}
+
+# Download Testing data
+if(!file.exists("./data/pml-testing.csv")) {
+  url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+  download.file(url, destfile = "./data/pml-testing.csv")
+}
+```
+
+And, then read the data into a *dataframe*.
+ 
+```{r read_data, cache=TRUE}
+# Read Training data
+training_csv <- read.csv("./data/pml-training.csv")
+
+# Read Testing data
+testing_csv <- read.csv("./data/pml-testing.csv")
+```
+
+Look at the dimensions of training data.
+
+```{r dim_training}
+dim(training_csv)
+```
+
+Look at the dimensions of testing data.
+
+```{r dim_testing}
+dim(testing_csv)
+```
+
+Look at the structure of training data.
+
+```{r str_training}
+str(training_csv)
+```
+
+It appears that there are a significant number of columns (*variables*) having mostly missing data in them. Let us remove the columns containing more than *50 %* of their values as **NA** values.
+
+```{r remove_na, cache=TRUE}
+# Modified Training dataset
+training_csv_mod <- training_csv[, -which(colMeans(is.na(training_csv)
+                                                   | training_csv == "") > 0.50)]
+
+# Modified Testing dataset
+testing_csv_mod <- testing_csv[, -which(colMeans(is.na(training_csv)
+                                                   | training_csv == "") > 0.50)]
+```
+
+Let us format the *three* **`timestamp`** columns.
+
+```{r format_date}
+# Format date in Training data
+training_csv_mod$cvtd_timestamp <- as.POSIXct(training_csv_mod$cvtd_timestamp,
+                                              format = "%d/%m/%Y %H:%M")
+
+# Format date in Testing data
+testing_csv_mod$cvtd_timestamp <- as.POSIXct(testing_csv_mod$cvtd_timestamp,
+                                              format = "%d/%m/%Y %H:%M")
+```
+
+```{r format_time}
+# Format time in Training data
+training_csv_mod$raw_timestamp_part_1 <- as.POSIXlt(training_csv_mod$raw_timestamp_part_1,
+                                                    origin = "1970-01-01",
+                                                    tz = "UTC")
+training_csv_mod$raw_timestamp_part_2 <- as.POSIXlt(training_csv_mod$raw_timestamp_part_2*1e-6,
+                                                    origin = training_csv_mod$raw_timestamp_part_1,
+                                                    tz = "UTC")
+
+# Format time in Testing data
+testing_csv_mod$raw_timestamp_part_1 <- as.POSIXlt(testing_csv_mod$raw_timestamp_part_1,
+                                                   origin = "1970-01-01",
+                                                   tz = "UTC")
+testing_csv_mod$raw_timestamp_part_2 <- as.POSIXlt(testing_csv_mod$raw_timestamp_part_2*1e-6,
+                                                   origin = testing_csv_mod$raw_timestamp_part_1,
+                                                   tz = "UTC")
+```
+
+It is observed from above that the *three* **`timestamp`** columns represents the same piece of information split up into three parts and hence, are redundant. Let us format these columns into *one* variable. First, drop the redundant columns.
+
+```{r remove_red_time}
+# Drop the redundant columns
+training_csv_mod <- training_csv_mod[, -which(names(training_csv_mod)
+                                              %in% c("raw_timestamp_part_1", "cvtd_timestamp"))]
+testing_csv_mod <- testing_csv_mod[, -which(names(testing_csv_mod)
+                                            %in% c("raw_timestamp_part_1", "cvtd_timestamp"))]
+```
+
+Next, rename the **`timestamp`** variable.
+
+```{r rename_time}
+## Rename the column to 'time_stamp'
+training_csv_mod <- rename(training_csv_mod, timestamp = raw_timestamp_part_2)
+testing_csv_mod <- rename(testing_csv_mod, timestamp = raw_timestamp_part_2)
+```
+
+Finally, we have to convert the *time* format back to *numeric* format for modelling.
+
+```{r numeric_time}
+## Convert back to numeric format for modelling
+training_csv_mod$timestamp <- as.numeric(training_csv_mod$timestamp)
+testing_csv_mod$timestamp <- as.numeric(testing_csv_mod$timestamp)
+```
+
+Now, check whether any column has *near-zero* variance.
+
+```{r near_zero_var, cache=TRUE}
+# Check for near-zero variance predictors
+names(training_csv_mod)[nearZeroVar(training_csv_mod, saveMetrics = T)$nzv]
+names(testing_csv_mod)[nearZeroVar(testing_csv_mod, saveMetrics = T)$nzv]
+```
+
+This column will not be helpful during the modelling so let us drop it.
+
+```{r drop_nzv, cache=TRUE}
+# Drop near-zero variance predictor
+training_csv_mod <- training_csv_mod[, !nearZeroVar(training_csv_mod, saveMetrics = T)$nzv]
+testing_csv_mod <- testing_csv_mod[, !nearZeroVar(testing_csv_mod, saveMetrics = T)$nzv]
+```
+
+Lastly, the first column **`X`** is just the index variable, so drop it.
+
+```{r drop_X}
+# Drop the index variable
+training_csv_mod <- training_csv_mod[, -which(names(training_csv_mod) == "X")]
+testing_csv_mod <- testing_csv_mod[, -which(names(testing_csv_mod) == "X")]
+```
+
+Check the final dimensions of training and testing data.
+
+```{r dim_mod}
+# Final dimensions
+dim(training_csv_mod)
+dim(testing_csv_mod)
+```
+
+
+## Modelling
+
+Set the seed for reproducibility.
+
+```{r seed}
+set.seed(123)
+```
+
+Let us split the training data into *three* subsets for modelling, namely **`training_set`** (about *50 %*) for model fitting, **`testing_set`** (about *20 %*) for model tuning and **`validation_set`** (about *30 %*) for model evaluation.
+
+```{r train_test_val, cache=TRUE}
+# Split training data into build data and validation set
+inBuild <- createDataPartition(y = training_csv_mod$classe,
+                               p = 0.70,
+                               list = FALSE)
+
+validation_set <- training_csv_mod[-inBuild, ]
+buildData <- training_csv_mod[inBuild, ]
+
+# Split build data into training set and testing set
+inTrain <- createDataPartition(y = buildData$classe,
+                               p = 0.70,
+                               list = FALSE)
+
+training_set <- buildData[inTrain, ]
+testing_set <- buildData[-inTrain, ]
+```
+
+Let us fit a number of different models and compare them to find the most suitable model for our problem.
+
+During modelling, we will use **`center`** and **`scale`** preprocessing on the data. We will also use *repeated K-fold cross validation* with **`k=3`** number of folds and **`n=5`** number of repetitions. 
+
+1. Decision tree
+
+```{r fit_rpart, cache=TRUE}
+fit_rpart <- train(form = classe~.,
+                   data = training_set,
+                   method = "rpart",
+                   preProcess = c("center", "scale"),
+                   tuneLength = 3,
+                   trControl = trainControl(method = "repeatedcv", number = 3, repeats = 5))
+```
+
+```{r predict_rpart, cache=TRUE}
+# For testing set
+pred_t_rpart <- predict(fit_rpart, testing_set)
+
+# For validation set
+pred_v_rpart <- predict(fit_rpart, validation_set)
+```
+
+2. K-nearest neighbours
+
+```{r fit_knn, cache=TRUE}
+fit_knn <- train(form = classe~.,
+                 data = training_set,
+                 method = "knn",
+                 preProcess = c("center", "scale"),
+                 tuneLength = 3,
+                 trControl = trainControl(method = "repeatedcv", number = 3, repeats = 5))
+```
+
+```{r predict_knn, cache=TRUE}
+# For testing set
+pred_t_knn <- predict(fit_knn, testing_set)
+
+# For validation set
+pred_v_knn <- predict(fit_knn, validation_set)
+```
+
+3. Support vector machine
+
+```{r fit_svmLinear, cache=TRUE}
+fit_svmLinear <- train(form = classe~.,
+                       data = training_set,
+                       method = "svmLinear",
+                       preProcess = c("center", "scale"),
+                       tuneLength = 3,
+                       trControl = trainControl(method = "repeatedcv", number = 3, repeats = 5))
+```
+
+```{r predict_svmLinear, cache=TRUE}
+# For testing set
+pred_t_svmLinear <- predict(fit_svmLinear, testing_set)
+
+# For validation set
+pred_v_svmLinear <- predict(fit_svmLinear, validation_set)
+```
+
+Let us look at the accuracy of the above models on the **`testing_set`**.
+
+```{r accuracy_models, cache=TRUE}
+# Decision tree
+confusionMatrix(pred_t_rpart, testing_set$classe)$overall["Accuracy"]
+
+# K-nearest neighbours
+confusionMatrix(pred_t_knn, testing_set$classe)$overall["Accuracy"]
+
+# Support vector machine
+confusionMatrix(pred_t_svmLinear, testing_set$classe)$overall["Accuracy"]
+```
+
+From above, we see can see that the accuracy from the **K-nearest Neighbours** model is the highest among the given models (about *95 %*).
+
+We can use model stacking/ensemble technique to stack the above three models and improve the accuracy further.
+
+
+## Ensemble
+
+For model stacking, we will again try different algorithms for the *top* layer and find the best model with respect to accuracy.
+
+We will have to prepare a *stacked* dataframe consisting of the predictions from the above three models and the actual **`classe`** variable from the **`testing_set`**. We will use this for training.
+
+```{r stacked_df_t}
+stacked_df_t <- data.frame(pred_rpart = pred_t_rpart,
+                           pred_knn = pred_t_knn,
+                           pred_svmLinear = pred_t_svmLinear,
+                           classe = testing_set$classe)
+```
+
+We will use *bootstraping* with **`n=10`** number of repetitions.
+
+1. Bagged decision tree
+
+```{r stacked_treebag, cache=TRUE}
+stacked_treebag <- train(form = classe~.,
+                         data = stacked_df_t,
+                         method = "treebag",
+                         tuneLength = 4,
+                         trControl = trainControl(method = "boot", number = 10))
+```
+
+```{r pred_st_treebag, cache=TRUE}
+pred_st_treebag <- predict(stacked_treebag, stacked_df_t)
+```
+
+2. Gradient boosting machine
+
+```{r stacked_gbm, cache=TRUE}
+stacked_gbm <- train(form = classe~.,
+                     data = stacked_df_t,
+                     method = "gbm",
+                     verbose = FALSE,
+                     tuneLength = 4,
+                     trControl = trainControl(method = "boot", number = 10))
+```
+
+```{r pred_st_gbm, cache=TRUE}
+pred_st_gbm <- predict(stacked_gbm, stacked_df_t)
+```
+
+3. Random forest
+
+```{r stacked_rf, cache=TRUE}
+stacked_rf <- train(form = classe~.,
+                    data = stacked_df_t,
+                    method = "rf",
+                    tuneLength = 4,
+                    trControl = trainControl(method = "boot", number = 10))
+```
+
+```{r pred_st_rf, cache=TRUE}
+pred_st_rf <- predict(stacked_rf, stacked_df_t)
+```
+
+Let us look at the accuracy of the stacked models on the **`testing_set`**.
+
+```{r stacked_accuracy, cache=TRUE}
+# Bagged decision tree
+confusionMatrix(pred_st_treebag, testing_set$classe)$overall["Accuracy"]
+
+# Gradient boosting machine
+confusionMatrix(pred_st_gbm, testing_set$classe)$overall["Accuracy"]
+
+# Random forest
+confusionMatrix(pred_st_rf, testing_set$classe)$overall["Accuracy"]
+```
+
+From above, we can see that the *stacked* model using **Bagged Decision Tree** model as the *top* layer is the most accurate. It is also observed that the increase in accuracy is **only incremental**.
+
+We will use this model to calculate the *Out-of-sample error*.
+
+
+## Out-of-sample Error
+
+We will prepare a *stacked* dataframe using **`validation_set`** similar to the previous step. We will use this for validation.
+
+```{r stacked_df_v}
+stacked_df_v <- data.frame(pred_rpart = pred_v_rpart,
+                           pred_knn = pred_v_knn,
+                           pred_svmLinear = pred_v_svmLinear)
+```
+
+Let us check the *out-of-sample* error.
+
+```{r pred_sv_rf, cache=TRUE}
+pred_sv_treebag <- predict(stacked_treebag, stacked_df_v)
+```
+
+```{r oos_error}
+oos_error <- round(((1 - confusionMatrix(pred_sv_treebag, validation_set$classe)$overall["Accuracy"]) * 100), 2)
+print(paste0("The Out-of-sample error is ", oos_error, " %"))
+```
+
+
+## Prediction
+
+Finally, we will use the above model to predict the **`classe`**  variable for **`testing_csv_mod`** dataset.
+
+First, we will predict the *base* layer.
+
+```{r base_layer}
+# Decision tree
+prediction_rpart <- predict(fit_rpart, testing_csv_mod)
+
+# K-nearest neighbours
+prediction_knn <- predict(fit_knn, testing_csv_mod)
+
+# Support vector machine
+prediction_svmLinear <- predict(fit_svmLinear, testing_csv_mod)
+```
+
+Prepare the *stacked* dataframe.
+
+```{r stacked_prediction}
+stacked_prediction <- data.frame(pred_rpart = prediction_rpart,
+                                 pred_knn = prediction_knn,
+                                 pred_svmLinear = prediction_svmLinear)
+```
+
+```{r prediction}
+prediction <- predict(stacked_treebag, stacked_prediction)
+print(prediction)
+```
+
+The above predictions were submitted as part of the assignment.
